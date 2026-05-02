@@ -1,5 +1,5 @@
 [package]
-name = "kevin/roblox-coverage"
+name = "kevmp/roblox-coverage"
 version = "0.1.2"
 registry = "https://github.com/UpliftGames/wally-index"
 realm = "shared"
