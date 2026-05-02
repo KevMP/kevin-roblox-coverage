@@ -1285,6 +1285,7 @@ function parser.instrumentSource(source: string, filePath: string, coverage)
 	-- Track which lines have function declaration instrumentation
 	local functionDeclarationLines = {}
 	local branchInstrumentedLines = {}
+	local implicitElseBranchesByLine = {}
 	local branchAdded = 0
 	local linesInCondition = {}
 
@@ -1641,6 +1642,20 @@ function parser.instrumentSource(source: string, filePath: string, coverage)
 			elseIdx = elseIdx,
 			endTokenIdx = endTokenIdx,
 		}
+
+		if not isTernary and elseIdx == nil and #branchLocations >= 2 then
+			local endToken = tokens[endTokenIdx]
+			if endToken then
+				if not implicitElseBranchesByLine[endToken.line] then
+					implicitElseBranchesByLine[endToken.line] = {}
+				end
+				table.insert(implicitElseBranchesByLine[endToken.line], {
+					branchId = branchId,
+					endTokenIdx = endTokenIdx,
+					falsePathIndex = #branchLocations - 1,
+				})
+			end
+		end
 
 		for _, branchInfo in ipairs(branchLines) do
 			if not branchInstrumentedLines[branchInfo.line] then
@@ -2099,8 +2114,8 @@ function parser.instrumentSource(source: string, filePath: string, coverage)
 
 				-- Register branch if we found at least 2 paths
 				if #branchLocations >= 2 then
-					local endLine = tokens[j - 1].line
-					local endIdx = j - 1
+					local resolvedEndTokenIdx = endTokenIdx or math.max(1, math.min(j - 1, #tokens))
+					local endLine = tokens[resolvedEndTokenIdx].line
 
 					if not isTernary and conditionHasInlineIf then
 						table.insert(delayedBranches, {
@@ -2111,13 +2126,24 @@ function parser.instrumentSource(source: string, filePath: string, coverage)
 							ifTokenIdx = i,
 							thenTokenIdx = thenIdx,
 							elseIdx = elseIdx,
-							endTokenIdx = endIdx,
+							endTokenIdx = resolvedEndTokenIdx,
 							tokenLine = token.line,
 						})
 					else
 						local branchId = coverage.nextBranchId
 						coverage.nextBranchId += 1
-						registerBranch(branchId, branchLines, branchLocations, isTernary, endLine, i, thenIdx, elseIdx, endIdx, token.line)
+						registerBranch(
+							branchId,
+							branchLines,
+							branchLocations,
+							isTernary,
+							endLine,
+							i,
+							thenIdx,
+							elseIdx,
+							resolvedEndTokenIdx,
+							token.line
+						)
 					end
 				end
 			end
@@ -2280,6 +2306,7 @@ function parser.instrumentSource(source: string, filePath: string, coverage)
 
 		local modifications = {}
 		local lineInsertions = {}
+		local handledImplicitBranchInfos = {}
 		if functionDeclarationLines[lineNo] then
 			for _, decl in ipairs(functionDeclarationLines[lineNo]) do
 				table.insert(lineInsertions, {
@@ -2307,6 +2334,58 @@ function parser.instrumentSource(source: string, filePath: string, coverage)
 					end
 					stmtAdded += 1
 				end
+			end
+		end
+
+		if implicitElseBranchesByLine[lineNo] then
+			local implicitBranches = implicitElseBranchesByLine[lineNo]
+			table.sort(implicitBranches, function(a, b)
+				return tokens[a.endTokenIdx].column > tokens[b.endTokenIdx].column
+			end)
+
+			for _, implicitInfo in ipairs(implicitBranches) do
+				local branchId = implicitInfo.branchId
+				local endToken = tokens[implicitInfo.endTokenIdx]
+				local sameLineBranchProbes = {}
+
+				if branchInstrumentedLines[lineNo] then
+					for _, info in ipairs(branchInstrumentedLines[lineNo]) do
+						if info.branchId == branchId then
+							table.insert(sameLineBranchProbes, info)
+							handledImplicitBranchInfos[info] = true
+						end
+					end
+				end
+
+				table.sort(sameLineBranchProbes, function(a, b)
+					return a.pathIndex < b.pathIndex
+				end)
+
+				local injectedProbeCount = 1
+				local insertText = "else _G.__covbranch("
+					.. tostring(branchId)
+					.. ", "
+					.. tostring(implicitInfo.falsePathIndex)
+					.. "); "
+
+				if #sameLineBranchProbes > 0 then
+					local sameLineProbeTexts = {}
+					for _, info in ipairs(sameLineBranchProbes) do
+						table.insert(
+							sameLineProbeTexts,
+							"_G.__covbranch(" .. tostring(info.branchId) .. ", " .. tostring(info.pathIndex) .. ");"
+						)
+					end
+
+					injectedProbeCount += #sameLineBranchProbes
+					insertText = table.concat(sameLineProbeTexts, " ")
+						.. "\n"
+						.. string.rep(" ", endToken.column)
+						.. insertText
+				end
+
+				text = text:sub(1, endToken.column) .. insertText .. text:sub(endToken.column + 1)
+				branchAdded += injectedProbeCount
 			end
 		end
 
@@ -2453,6 +2532,9 @@ function parser.instrumentSource(source: string, filePath: string, coverage)
 
 					if branchInstrumentedLines[lineNo] then
 						for _, bInfo in ipairs(branchInstrumentedLines[lineNo]) do
+							if handledImplicitBranchInfos[bInfo] then
+								continue
+							end
 							table.insert(
 								modifications,
 								"_G.__covbranch("
@@ -2466,6 +2548,9 @@ function parser.instrumentSource(source: string, filePath: string, coverage)
 					end
 				else
 					for _, bInfo in ipairs(branchInstrumentedLines[lineNo]) do
+						if handledImplicitBranchInfos[bInfo] then
+							continue
+						end
 						table.insert(
 							modifications,
 							"_G.__covbranch(" .. tostring(bInfo.branchId) .. ", " .. tostring(bInfo.pathIndex) .. ");"
@@ -2517,6 +2602,9 @@ function parser.instrumentSource(source: string, filePath: string, coverage)
 
 					if branchInstrumentedLines[lineNo] then
 						for _, bInfo in ipairs(branchInstrumentedLines[lineNo]) do
+							if handledImplicitBranchInfos[bInfo] then
+								continue
+							end
 							table.insert(
 								modifications,
 								"_G.__covbranch("
@@ -2530,6 +2618,9 @@ function parser.instrumentSource(source: string, filePath: string, coverage)
 					end
 				else
 					for _, bInfo in ipairs(branchInstrumentedLines[lineNo]) do
+						if handledImplicitBranchInfos[bInfo] then
+							continue
+						end
 						table.insert(
 							modifications,
 							"_G.__covbranch(" .. tostring(bInfo.branchId) .. ", " .. tostring(bInfo.pathIndex) .. ");"
@@ -2542,6 +2633,9 @@ function parser.instrumentSource(source: string, filePath: string, coverage)
 			-- Normal branch instrumentation
 			if branchInstrumentedLines[lineNo] then
 				for _, bInfo in ipairs(branchInstrumentedLines[lineNo]) do
+					if handledImplicitBranchInfos[bInfo] then
+						continue
+					end
 					table.insert(
 						modifications,
 						"_G.__covbranch(" .. tostring(bInfo.branchId) .. ", " .. tostring(bInfo.pathIndex) .. ");"

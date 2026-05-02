@@ -17,8 +17,10 @@ end]]
 	-- Ensure end does not have a hit, it's purely a syntactic delimiter
 	expect(instrumented).toBe([[_G.__covhit(1); local x = 1
 if x then
-_G.__covbranch(1, 0); end]])
-	expect(added).toBe(2)
+_G.__covbranch(1, 0);
+else _G.__covbranch(1, 1); end]])
+	expect(added).toBe(3)
+	expect(#coverage.branchMap[1].locations).toBe(2)
 end)
 
 -- Edge cases for instrumentSource
@@ -85,9 +87,22 @@ end]]
 	expect(instrumented).toBe([[if x then
   _G.__covbranch(1, 0); if y then
     _G.__covbranch(2, 0); _G.__covhit(1); z()
-  end
-end]])
+  else _G.__covbranch(2, 1); end
+else _G.__covbranch(1, 1); end]])
+	expect(added).toBe(5)
+end)
+
+describe("instrumentSource with implicit else branch", function()
+	local coverage = ensureCoverage()
+	local source = [[if x then
+  a()
+end]]
+	local instrumented, added = parser.instrumentSource(source, "test.lua", coverage)
+	expect(instrumented).toBe([[if x then
+  _G.__covbranch(1, 0); _G.__covhit(1); a()
+else _G.__covbranch(1, 1); end]])
 	expect(added).toBe(3)
+	expect(#coverage.branchMap[1].locations).toBe(2)
 end)
 
 describe("instrumentSource with if-elseif-else", function()
@@ -108,6 +123,23 @@ end]])
 	expect(added).toBe(5)
 end)
 
+describe("instrumentSource with if-elseif and implicit final else", function()
+	local coverage = ensureCoverage()
+	local source = [[if x then
+  a()
+elseif y then
+  b()
+end]]
+	local instrumented, added = parser.instrumentSource(source, "test.lua", coverage)
+	expect(instrumented).toBe([[if x then
+  _G.__covbranch(1, 0); _G.__covhit(1); a()
+elseif y then
+  _G.__covbranch(1, 1); _G.__covhit(2); b()
+else _G.__covbranch(1, 2); end]])
+	expect(added).toBe(5)
+	expect(#coverage.branchMap[1].locations).toBe(3)
+end)
+
 describe("instrumentSource with comments", function()
 	local coverage = ensureCoverage()
 	local source = [[local x = 1 -- this is a comment
@@ -116,8 +148,9 @@ end]]
 	local instrumented, added = parser.instrumentSource(source, "test.lua", coverage)
 	expect(instrumented).toBe([[_G.__covhit(1); local x = 1 -- this is a comment
 if x then
-_G.__covbranch(1, 0); end]])
-	expect(added).toBe(2)
+_G.__covbranch(1, 0);
+else _G.__covbranch(1, 1); end]])
+	expect(added).toBe(3)
 end)
 
 describe("instrumentSource with long strings", function()
@@ -141,17 +174,19 @@ end]]
     _G.__covhit(1); local x = 1
     if x then
         _G.__covbranch(1, 0); _G.__covhit(2); return x
-    end
+    else _G.__covbranch(1, 1); end
 end]])
-	expect(added).toBe(4)
+	expect(added).toBe(5)
 end)
 
 describe("instrumentSource with multi-line if condition", function()
 	local coverage = ensureCoverage()
 	local source = "if x == 1\n\tand y == 2 then\n\treturn true\nend"
 	local instrumented, added = parser.instrumentSource(source, "test.lua", coverage)
-	expect(instrumented).toBe("if x == 1\n\tand y == 2 then\n\t_G.__covbranch(1, 0); _G.__covhit(1); return true\nend")
-	expect(added).toBe(2)
+	expect(instrumented).toBe(
+		"if x == 1\n\tand y == 2 then\n\t_G.__covbranch(1, 0); _G.__covhit(1); return true\nelse _G.__covbranch(1, 1); end"
+	)
+	expect(added).toBe(3)
 end)
 
 describe("instrumentSource with multi-line elseif condition", function()
@@ -166,9 +201,9 @@ describe("instrumentSource with multi-line elseif condition", function()
 			.. '\n\tand type(y) == "table"'
 			.. "\nthen"
 			.. "\n\t_G.__covbranch(1, 1); _G.__covhit(2); b()"
-			.. "\nend"
+			.. "\nelse _G.__covbranch(1, 2); end"
 	)
-	expect(added).toBe(4)
+	expect(added).toBe(5)
 end)
 
 describe("instrumentSource does not instrument on strings", function()
@@ -213,8 +248,8 @@ elseif
     y
 then
     _G.__covbranch(1, 1); _G.__covhit(2); b()
-end]])
-	expect(added).toBe(4)
+else _G.__covbranch(1, 2); end]])
+	expect(added).toBe(5)
 end)
 
 describe("instrumentSource with function literal in method call", function()
@@ -361,9 +396,9 @@ elseif
     and isCallable(rawget(rawget(objectMetatable, "__index"), "andThen"))
 then
     _G.__covbranch(1, 2); _G.__covhit(3); return true
-end]])
+else _G.__covbranch(1, 3); end]])
 
-	expect(added).toBe(6)
+	expect(added).toBe(7)
 end)
 
 describe("regression: instrumentSource Error.extend", function()
@@ -400,10 +435,10 @@ end]]
     _G.__covhit(1); local rest = { ... }
     if #rest > 0 or typeof(testName) ~= "string" then
         _G.__covbranch(1, 0); _G.__covhit(2); error(ErrorWithStack.new("Todo must be called with only a description.", test.todo))
-    end
+    else _G.__covbranch(1, 1); end
     return _addTest(testName, "todo", function() _G.__covfn(2); end, test.todo)
 end]])
-	expect(added).toBe(5)
+	expect(added).toBe(6)
 end)
 
 describe("regression: instrumentSource JestEnvironmentLuau.new", function()
@@ -459,11 +494,11 @@ end]]
 if i == #templateString then
     _G.__covbranch(2, 0); if expressionStarted then
         _G.__covbranch(3, 0); _G.__covhit(2); error("expression not closed")
-    end
+    else _G.__covbranch(3, 1); end
     _G.__covhit(3); table.insert(strings, string.sub(templateString, startIndex))
-end]]
+else _G.__covbranch(2, 1); end]]
 	)
-	expect(added).toBe(7)
+	expect(added).toBe(9)
 end)
 
 describe("regression: instrumentSource JestEach.each", function()
@@ -572,12 +607,12 @@ end]]
         _G.__covhit(4); local value = getPath(template, keyPath)
         if isPrimitive(value) then
             _G.__covbranch(1, 0); _G.__covhit(5); return title:gsub(match, tostring(value), 1)
-        end
+        else _G.__covbranch(1, 1); end
         _G.__covhit(6); return title:gsub(match, pretty(value, { maxDepth = 1, min = true }), 1)
     end
 end]]
 	)
-	expect(added).toBe(9)
+	expect(added).toBe(10)
 end)
 
 describe("regression: instrumentSource circus.combined.dispatch", function()
@@ -608,12 +643,12 @@ end]]
             )(nil, event, getState())
             if result ~= nil then
                 _G.__covbranch(1, 0); _G.__covhit(4); result:expect()
-            end
+            else _G.__covbranch(1, 1); end
             -- ROBLOX deviation END
         end
     end)
 end]])
-	expect(added).toBe(7)
+	expect(added).toBe(8)
 end)
 
 describe("regression: instrumentSource circus.combined.dispatch", function()
@@ -741,9 +776,9 @@ end]]
         or (result.message and typeof(result.message) ~= "string" and typeof(result.message) ~= "function")
     then
         _G.__covbranch(1, 0); _G.__covhit(1); return "hi"
-    end
+    else _G.__covbranch(1, 1); end
 end]])
-	expect(added).toBe(3)
+	expect(added).toBe(4)
 end)
 
 describe("regression: instrumentSource RobloxShared.expect.getObjectSubset", function()
@@ -780,8 +815,8 @@ end]]
         then _G.__covbranch(2, 0)(type_.displayName)
         elseif Boolean.toJSBoolean(type_.name) then _G.__covbranch(2, 1)(type_.name)
         else _G.__covbranch(2, 2)("Unknown")
-end]])
-	expect(added).toBe(5)
+else _G.__covbranch(1, 1); end]])
+	expect(added).toBe(6)
 end)
 
 describe("regression: instrumentSource ReactElement.getType isForwardRef case", function()
@@ -1028,8 +1063,8 @@ end]]
 	local instrumented, added = parser.instrumentSource(source, "test.lua", coverage)
 	expect(instrumented).toBe([[if pointInTriangle(if hy < my then _G.__covbranch(1, 0)(hx) else _G.__covbranch(1, 1)(qx), hy, mx, my, if hy < my then _G.__covbranch(2, 0)(qx) else _G.__covbranch(2, 1)(hx), hy, p.x, p.y) then
     _G.__covbranch(3, 0); _G.__covhit(1); print("inside triangle")
-end]])
-	expect(added).toBe(6)
+else _G.__covbranch(3, 1); end]])
+	expect(added).toBe(7)
 end)
 
 describe("regression: instrumentSource ternary in if", function()
@@ -1040,8 +1075,8 @@ end]]
 	local instrumented, added = parser.instrumentSource(source, "test.lua", coverage)
 	expect(instrumented).toBe([[if if invSize ~= nil and invSize > 0 then _G.__covbranch(1, 0)(isEarHashed(ear, minX, minY, invSize)) else _G.__covbranch(1, 1)(isEar(ear)) then
     _G.__covbranch(2, 0); _G.__covhit(1); print("ear found")
-end]])
-	expect(added).toBe(4)
+else _G.__covbranch(2, 1); end]])
+	expect(added).toBe(5)
 end)
 
 
