@@ -1801,6 +1801,7 @@ function parser.instrumentSource(source: string, filePath: string, coverage)
 				-- Look for elseif/else/end to find other branches
 				local depth = 1
 				local inlineIfDepth = 0
+				local pendingLoopDo = 0
 				local j = thenIdx + 1
 				local foundElse = false
 				local hasElseLike = false
@@ -1921,14 +1922,18 @@ function parser.instrumentSource(source: string, filePath: string, coverage)
 					end
 
 					if t.kind == "keyword" then
-						if
-							t.value == "if"
-							or t.value == "do"
-							or t.value == "for"
-							or t.value == "function"
-							or t.value == "while"
-							or t.value == "repeat"
-						then
+						if t.value == "for" or t.value == "while" then
+							-- `for`/`while` are closed by a single `end`; their `do` should not
+							-- count as a separate nested block opener.
+							depth += 1
+							pendingLoopDo += 1
+						elseif t.value == "do" then
+							if pendingLoopDo > 0 then
+								pendingLoopDo -= 1
+							else
+								depth += 1
+							end
+						elseif t.value == "if" or t.value == "function" or t.value == "repeat" then
 							-- Treat inline/ternary-style if-expressions specially so they don't steal the outer else
 							local isExpressionIf = false
 							if t.value == "if" then

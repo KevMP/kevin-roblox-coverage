@@ -1079,5 +1079,79 @@ else _G.__covbranch(2, 1); end]])
 	expect(added).toBe(5)
 end)
 
+describe("regression: implicit else stays attached for nested loop cleanup branch", function()
+	local coverage = ensureCoverage()
+	local source = [[if returnErrorMessage then
+		for index: number = #attachedKeysThisCall, 1, -1 do
+			local controllerKey: string = attachedKeysThisCall[index]
+			local removedController: Controller? = actor:RemoveController(controllerKey)
+			if removedController then
+				DestroyController(controllerKey, removedController)
+			end
+		end
+		return false, returnErrorMessage
+	end
+
+	return true, nil
+end]]
+	local instrumented, added = parser.instrumentSource(source, "test.lua", coverage)
+	expect(instrumented).toBe([[if returnErrorMessage then
+		_G.__covbranch(1, 0); _G.__covhit(1); for index: number = #attachedKeysThisCall, 1, -1 do
+			_G.__covhit(2); local controllerKey: string = attachedKeysThisCall[index]
+			_G.__covhit(3); local removedController: Controller? = actor:RemoveController(controllerKey)
+			if removedController then
+				_G.__covbranch(2, 0); _G.__covhit(4); DestroyController(controllerKey, removedController)
+			else _G.__covbranch(2, 1); end
+		end
+		_G.__covhit(5); return false, returnErrorMessage
+	else _G.__covbranch(1, 1); end
+
+	_G.__covhit(6); return true, nil
+end]])
+	expect(added).toBe(10)
+end)
+
+describe("regression: implicit else stays attached for nested dependency loop branch", function()
+	local coverage = ensureCoverage()
+	local source = [[for key: string, isWanted: boolean in isWantedByKey do
+		if isWanted then
+			local controllerDef: ControllerDef = byKey[key]
+			local dependsOn: { string }? = controllerDef.dependsOn
+
+			if dependsOn ~= nil then
+				for _, dependencyKey: string in dependsOn do
+					if byKey[dependencyKey] == nil then
+						return nil, "MissingDependency:" .. key .. "->" .. dependencyKey
+					end
+
+					if isWantedByKey[dependencyKey] ~= true then
+						return nil, "DependencyNotInAttachSet:" .. key .. "->" .. dependencyKey
+					end
+				end
+			end
+		end
+	end]]
+	local instrumented, added = parser.instrumentSource(source, "test.lua", coverage)
+	expect(instrumented).toBe([[_G.__covhit(1); for key: string, isWanted: boolean in isWantedByKey do
+		if isWanted then
+			_G.__covbranch(1, 0); _G.__covhit(2); local controllerDef: ControllerDef = byKey[key]
+			_G.__covhit(3); local dependsOn: { string }? = controllerDef.dependsOn
+
+			if dependsOn ~= nil then
+				_G.__covbranch(2, 0); _G.__covhit(4); for _, dependencyKey: string in dependsOn do
+					if byKey[dependencyKey] == nil then
+						_G.__covbranch(3, 0); _G.__covhit(5); return nil, "MissingDependency:" .. key .. "->" .. dependencyKey
+					else _G.__covbranch(3, 1); end
+
+					if isWantedByKey[dependencyKey] ~= true then
+						_G.__covbranch(4, 0); _G.__covhit(6); return nil, "DependencyNotInAttachSet:" .. key .. "->" .. dependencyKey
+					else _G.__covbranch(4, 1); end
+				end
+			else _G.__covbranch(2, 1); end
+		else _G.__covbranch(1, 1); end
+	end]])
+	expect(added).toBe(14)
+end)
+
 
 
